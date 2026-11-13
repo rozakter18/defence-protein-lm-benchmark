@@ -1,0 +1,8 @@
+biopython>=1.83
+fair-esm>=2.0.0
+numpy>=1.26
+pandas>=2.1
+requests>=2.31
+scikit-learn>=1.4
+torch>=2.2
+tqdm>=4.66
