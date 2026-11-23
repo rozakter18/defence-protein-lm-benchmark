@@ -24,7 +24,7 @@ MIN_SEQS_PER_TYPE = 200
 MAX_SEQ_LEN = 1022
 
 # MMseqs2 clustering identity for the leakage-controlled split.
-CLUSTER_IDENTITY = 0.30
+CLUSTER_IDENTITY = 0.20
 CLUSTER_COVERAGE = 0.80
 
 TEST_FRACTION = 0.20

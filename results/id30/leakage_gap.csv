@@ -1,0 +1,7 @@
+task,features,model,clustered,random,leak
+A_family,aac,logreg,0.437,0.475,0.039
+A_family,aac,mlp,0.524,0.679,0.155
+A_family,esm2,logreg,0.947,0.984,0.037
+A_family,esm2,mlp,0.952,0.986,0.033
+A_family,kmer,logreg,0.497,0.735,0.238
+A_family,kmer,mlp,0.565,0.826,0.26

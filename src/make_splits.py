@@ -37,7 +37,8 @@ def run_mmseqs(fasta, outdir):
     outdir.mkdir(exist_ok=True)
     cmd = ["mmseqs", "easy-cluster", str(fasta), str(outdir / "clu"),
            str(outdir / "tmp"), "--min-seq-id", str(CLUSTER_IDENTITY),
-           "-c", str(CLUSTER_COVERAGE), "--cov-mode", "0"]
+           "-c", str(CLUSTER_COVERAGE), "--cov-mode", "0",
+           "-s", "7.5"]
     print(" ".join(cmd))
     subprocess.run(cmd, check=True)
     return tsv
@@ -104,7 +105,7 @@ def main():
 
     fasta = INTERIM / "all.fasta"
     write_fasta(df, fasta)
-    members = read_clusters(run_mmseqs(fasta, INTERIM / "mmseqs"))
+    members = read_clusters(run_mmseqs(fasta, INTERIM / f"mmseqs_{CLUSTER_IDENTITY}"))
     print(f"{len(members):,} clusters from {len(df):,} sequences")
 
     df["split_clustered"] = clustered_split(df, members)
