@@ -11,7 +11,7 @@ for d in (RAW, INTERIM, RESULTS):
 
 # NCBI Entrez. Set your own address: NCBI blocks anonymous bulk requests.
 # An API key raises the rate limit from 3 to 10 requests/second.
-ENTREZ_EMAIL = "your.email@example.com"
+ENTREZ_EMAIL = "rozakterofficial18@gmail.com"
 ENTREZ_API_KEY = None
 
 # How many defence system types to keep. Rarest classes are dropped so every
