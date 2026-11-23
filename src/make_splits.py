@@ -1,28 +1,24 @@
 """Build both split types.
 
-random     — shuffle sequences, split. Homologs land on both sides.
-clustered  — MMseqs2 cluster at 30% identity, assign whole clusters to one side.
+random     - shuffle sequences, split. Homologs land on both sides.
+clustered  - MMseqs2 cluster at 30% identity, whole clusters to one side,
+             assigned stratified by system type so every class is represented
+             in train, val and test.
 
-Clusters are assigned to test greedily from largest to smallest until the test
-fraction is reached, which keeps class balance closer than random cluster
-assignment when cluster sizes are very uneven.
+A cluster spanning several system types is balanced under its majority type,
+so it is counted once rather than for each.
 """
 
 import subprocess
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
+from shutil import which
 
 import numpy as np
 import pandas as pd
 
-from config import (
-    CLUSTER_COVERAGE,
-    CLUSTER_IDENTITY,
-    INTERIM,
-    SEED,
-    TEST_FRACTION,
-    VAL_FRACTION,
-)
+from config import (CLUSTER_COVERAGE, CLUSTER_IDENTITY, INTERIM, SEED,
+                    TEST_FRACTION, VAL_FRACTION)
 
 
 def write_fasta(df, path):
@@ -32,28 +28,19 @@ def write_fasta(df, path):
 
 
 def run_mmseqs(fasta, outdir):
-    if not shutil_which("mmseqs"):
-        sys.exit(
-            "mmseqs not found on PATH.\n"
-            "  conda install -c bioconda mmseqs2 -y\n"
-            "or grab the static binary from github.com/soedinglab/MMseqs2/releases"
-        )
+    tsv = outdir / "clu_cluster.tsv"
+    if tsv.exists():
+        print(f"reusing existing clustering: {tsv.name}")
+        return tsv
+    if not which("mmseqs"):
+        sys.exit("mmseqs not found on PATH.")
     outdir.mkdir(exist_ok=True)
-    prefix = outdir / "clu"
-    cmd = [
-        "mmseqs", "easy-cluster", str(fasta), str(prefix), str(outdir / "tmp"),
-        "--min-seq-id", str(CLUSTER_IDENTITY),
-        "-c", str(CLUSTER_COVERAGE),
-        "--cov-mode", "0",
-    ]
+    cmd = ["mmseqs", "easy-cluster", str(fasta), str(outdir / "clu"),
+           str(outdir / "tmp"), "--min-seq-id", str(CLUSTER_IDENTITY),
+           "-c", str(CLUSTER_COVERAGE), "--cov-mode", "0"]
     print(" ".join(cmd))
     subprocess.run(cmd, check=True)
-    return prefix.with_name("clu_cluster.tsv")
-
-
-def shutil_which(name):
-    from shutil import which
-    return which(name)
+    return tsv
 
 
 def read_clusters(tsv):
@@ -66,30 +53,45 @@ def read_clusters(tsv):
 
 
 def clustered_split(df, members):
-    n_test = int(len(df) * TEST_FRACTION)
-    n_val = int(len(df) * VAL_FRACTION)
+    rng = np.random.default_rng(SEED)
+    pid_to_type = dict(zip(df["protein_id"], df["system_type"]))
+    known = set(pid_to_type)
 
-    order = sorted(members.items(), key=lambda kv: -len(kv[1]))
-    assignment, filled_test, filled_val = {}, 0, 0
-    for _, mem in order:
-        if filled_test < n_test:
-            split, filled_test = "test", filled_test + len(mem)
-        elif filled_val < n_val:
-            split, filled_val = "val", filled_val + len(mem)
-        else:
-            split = "train"
-        for m in mem:
-            assignment[m] = split
+    by_type = defaultdict(list)
+    for rep, mem in members.items():
+        mem = [m for m in mem if m in known]
+        if not mem:
+            continue
+        majority = Counter(pid_to_type[m] for m in mem).most_common(1)[0][0]
+        by_type[majority].append(mem)
+
+    assignment = {}
+    for system_type, groups in by_type.items():
+        total = sum(len(m) for m in groups)
+        want_test, want_val = total * TEST_FRACTION, total * VAL_FRACTION
+        n_test = n_val = 0
+        for i in rng.permutation(len(groups)):
+            mem = groups[i]
+            if n_test < want_test:
+                split, n_test = "test", n_test + len(mem)
+            elif n_val < want_val:
+                split, n_val = "val", n_val + len(mem)
+            else:
+                split = "train"
+            for m in mem:
+                assignment[m] = split
+
     return df["protein_id"].map(assignment).fillna("train")
 
 
-def random_split(df, rng):
+def random_split(df):
+    rng = np.random.default_rng(SEED)
     idx = rng.permutation(len(df))
     n_test = int(len(df) * TEST_FRACTION)
     n_val = int(len(df) * VAL_FRACTION)
     out = np.array(["train"] * len(df), dtype=object)
     out[idx[:n_test]] = "test"
-    out[idx[n_test : n_test + n_val]] = "val"
+    out[idx[n_test:n_test + n_val]] = "val"
     return pd.Series(out, index=df.index)
 
 
@@ -97,24 +99,27 @@ def main():
     path = INTERIM / "dataset.parquet"
     if not path.exists():
         path = INTERIM / "defence_proteins.parquet"
-        print(f"dataset.parquet not found, using {path.name} (Task A only)")
+        print(f"using {path.name} (Task A only)")
     df = pd.read_parquet(path)
 
     fasta = INTERIM / "all.fasta"
     write_fasta(df, fasta)
-
-    tsv = run_mmseqs(fasta, INTERIM / "mmseqs")
-    members = read_clusters(tsv)
+    members = read_clusters(run_mmseqs(fasta, INTERIM / "mmseqs"))
     print(f"{len(members):,} clusters from {len(df):,} sequences")
 
     df["split_clustered"] = clustered_split(df, members)
-    df["split_random"] = random_split(df, np.random.default_rng(SEED))
+    df["split_random"] = random_split(df)
 
-    for col in ("split_clustered", "split_random"):
-        print(f"\n{col}:\n{df[col].value_counts().to_string()}")
+    print("\nclustered split by class:")
+    print(pd.crosstab(df["system_type"], df["split_clustered"]).to_string())
+
+    leak = sum(1 for mem in members.values()
+               if len(set(df.set_index("protein_id")["split_clustered"]
+                          .reindex(mem).dropna())) > 1)
+    print(f"\nclusters spanning >1 split (should be 0): {leak}")
 
     df.to_parquet(INTERIM / "dataset_split.parquet", index=False)
-    print(f"\nwrote {INTERIM / 'dataset_split.parquet'}")
+    print(f"wrote {INTERIM / 'dataset_split.parquet'}")
 
 
 if __name__ == "__main__":
