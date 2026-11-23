@@ -1,12 +1,12 @@
 """Build both split types.
 
 random     - shuffle sequences, split. Homologs land on both sides.
-clustered  - MMseqs2 cluster at 30% identity, whole clusters to one side,
-             assigned stratified by system type so every class is represented
-             in train, val and test.
+clustered  - MMseqs2 cluster, whole clusters to one side, assigned stratified
+             so every class is represented in train, val and test.
 
-A cluster spanning several system types is balanced under its majority type,
-so it is counted once rather than for each.
+Stratification uses system_type where present and falls back to label_binary,
+so background proteins (Task B, no system type) are balanced as their own
+group rather than lumped together as missing.
 """
 
 import subprocess
@@ -19,6 +19,8 @@ import pandas as pd
 
 from config import (CLUSTER_COVERAGE, CLUSTER_IDENTITY, INTERIM, SEED,
                     TEST_FRACTION, VAL_FRACTION)
+
+STRAT = "_strat"
 
 
 def write_fasta(df, path):
@@ -34,11 +36,10 @@ def run_mmseqs(fasta, outdir):
         return tsv
     if not which("mmseqs"):
         sys.exit("mmseqs not found on PATH.")
-    outdir.mkdir(exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
     cmd = ["mmseqs", "easy-cluster", str(fasta), str(outdir / "clu"),
            str(outdir / "tmp"), "--min-seq-id", str(CLUSTER_IDENTITY),
-           "-c", str(CLUSTER_COVERAGE), "--cov-mode", "0",
-           "-s", "7.5"]
+           "-c", str(CLUSTER_COVERAGE), "--cov-mode", "0", "-s", "7.5"]
     print(" ".join(cmd))
     subprocess.run(cmd, check=True)
     return tsv
@@ -55,19 +56,19 @@ def read_clusters(tsv):
 
 def clustered_split(df, members):
     rng = np.random.default_rng(SEED)
-    pid_to_type = dict(zip(df["protein_id"], df["system_type"]))
+    pid_to_type = dict(zip(df.protein_id, df[STRAT]))
     known = set(pid_to_type)
 
     by_type = defaultdict(list)
-    for rep, mem in members.items():
+    for mem in members.values():
         mem = [m for m in mem if m in known]
         if not mem:
             continue
-        majority = Counter(pid_to_type[m] for m in mem).most_common(1)[0][0]
-        by_type[majority].append(mem)
+        maj = Counter(pid_to_type[m] for m in mem).most_common(1)[0][0]
+        by_type[maj].append(mem)
 
     assignment = {}
-    for system_type, groups in by_type.items():
+    for groups in by_type.values():
         total = sum(len(m) for m in groups)
         want_test, want_val = total * TEST_FRACTION, total * VAL_FRACTION
         n_test = n_val = 0
@@ -82,7 +83,7 @@ def clustered_split(df, members):
             for m in mem:
                 assignment[m] = split
 
-    return df["protein_id"].map(assignment).fillna("train")
+    return df.protein_id.map(assignment).fillna("train")
 
 
 def random_split(df):
@@ -103,6 +104,12 @@ def main():
         print(f"using {path.name} (Task A only)")
     df = pd.read_parquet(path)
 
+    if "label_binary" in df.columns:
+        df[STRAT] = df.system_type.fillna(df.label_binary)
+    else:
+        df[STRAT] = df.system_type
+    df[STRAT] = df[STRAT].fillna("unknown")
+
     fasta = INTERIM / "all.fasta"
     write_fasta(df, fasta)
     members = read_clusters(run_mmseqs(fasta, INTERIM / f"mmseqs_{CLUSTER_IDENTITY}"))
@@ -112,14 +119,15 @@ def main():
     df["split_random"] = random_split(df)
 
     print("\nclustered split by class:")
-    print(pd.crosstab(df["system_type"], df["split_clustered"]).to_string())
+    print(pd.crosstab(df[STRAT], df.split_clustered).to_string())
 
+    pid_split = dict(zip(df.protein_id, df.split_clustered))
     leak = sum(1 for mem in members.values()
-               if len(set(df.set_index("protein_id")["split_clustered"]
-                          .reindex(mem).dropna())) > 1)
+               if len({pid_split[m] for m in mem if m in pid_split}) > 1)
     print(f"\nclusters spanning >1 split (should be 0): {leak}")
 
-    df.to_parquet(INTERIM / "dataset_split.parquet", index=False)
+    df.drop(columns=[STRAT]).to_parquet(
+        INTERIM / "dataset_split.parquet", index=False)
     print(f"wrote {INTERIM / 'dataset_split.parquet'}")
 
 
