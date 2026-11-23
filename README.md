@@ -286,10 +286,3 @@ results/    metrics tables and figures
 | `results/taskA_only/` | results from before the background set was added |
 | `results/id30/` | the earliest 30%-identity single-split run |
 
-## Colour
-
-Figures use a palette adapted from a *Nature* cover. The scheme's blue and pink
-are not used together: their separation under red-green colour blindness is
-ΔE 3.9 against a usable floor of 8, so they are indistinguishable to a
-substantial fraction of readers. The violet and green pair used instead clears
-both the colour-vision-deficiency and normal-vision thresholds.
