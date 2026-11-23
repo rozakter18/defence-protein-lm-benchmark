@@ -1,80 +1,96 @@
-"""Download DefenseFinder's precomputed RefSeq annotations.
+"""Parse the DefenseFinder RefSeq export into one row per protein.
 
-The exact download URL and column names on the DefenseFinder site change
-between releases. Confirm both against https://defensefinder.mdmlab.fr/wiki/refseq/
-before the first run and update DEFENSEFINDER_URL / COLUMN_MAP below if needed.
-
-If the automatic download fails, download the table manually into
-data/raw/ and re-run — this script will use an existing file.
+Download the table from https://defensefinder.mdmlab.fr/wiki/refseq/ (the red
+"RefSeq" download link) and drop it in data/raw/. This script finds it, works
+out the delimiter, maps the columns, and caps each system type so classes stay
+balanced and the embedding pass stays tractable.
 """
 
 import sys
 
 import pandas as pd
-import requests
-from tqdm import tqdm
 
-from config import RAW, INTERIM, N_SYSTEM_TYPES, MIN_SEQS_PER_TYPE
+from config import (INTERIM, MAX_SEQS_PER_TYPE, MIN_SEQS_PER_TYPE,
+                    N_SYSTEM_TYPES, RAW)
 
-DEFENSEFINDER_URL = (
-    "https://defensefinder.mdmlab.fr/static/refseq/defense_finder_genes.tsv"
-)
-LOCAL = RAW / "defense_finder_genes.tsv"
-
-# Maps whatever the release calls these onto the names used downstream.
 COLUMN_MAP = {
-    "hit_id": "protein_id",
-    "replicon": "genome_id",
+    "accession_in_sys": "protein_id",
+    "accessions": "protein_id",
+    "system": "system_type",
     "type": "system_type",
+    "subsystem": "system_subtype",
     "subtype": "system_subtype",
+    "replicon": "genome_id",
+    "assembly": "assembly",
+    "species": "species",
+    "genus": "genus",
+    "phylum": "phylum",
 }
 
+ACCESSION_SPLIT = r"[,;|\s]+"
 
-def download(url, dest):
-    if dest.exists():
-        print(f"using existing {dest.name} ({dest.stat().st_size / 1e6:.1f} MB)")
-        return
-    print(f"downloading {url}")
-    with requests.get(url, stream=True, timeout=120) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        with open(dest, "wb") as fh, tqdm(
-            total=total, unit="B", unit_scale=True, disable=total == 0
-        ) as bar:
-            for chunk in r.iter_content(chunk_size=1 << 16):
-                fh.write(chunk)
-                bar.update(len(chunk))
+
+def find_input():
+    candidates = sorted(
+        p for p in RAW.iterdir()
+        if p.suffix.lower() in {".tsv", ".csv", ".txt"} and p.stat().st_size > 1000
+    )
+    if not candidates:
+        sys.exit(f"No table found in {RAW}. Download the RefSeq export first.")
+    if len(candidates) > 1:
+        print(f"found {len(candidates)} files, using {candidates[0].name}")
+    return candidates[0]
+
+
+def load(path):
+    head = path.open(encoding="utf-8", errors="replace").readline()
+    sep = "\t" if head.count("\t") > head.count(",") else ","
+    print(f"reading {path.name} with sep={sep!r}")
+    return pd.read_csv(path, sep=sep, low_memory=False)
 
 
 def main():
-    try:
-        download(DEFENSEFINDER_URL, LOCAL)
-    except Exception as exc:
-        sys.exit(
-            f"download failed: {exc}\n"
-            f"Fetch the gene table manually from "
-            f"https://defensefinder.mdmlab.fr/wiki/refseq/ and save it to {LOCAL}"
-        )
+    df = load(find_input())
+    print(f"{len(df):,} rows\n")
 
-    df = pd.read_csv(LOCAL, sep="\t", low_memory=False)
-    print(f"loaded {len(df):,} rows, columns: {list(df.columns)}")
+    rename = {c: COLUMN_MAP[c.strip().lower()] for c in df.columns
+              if c.strip().lower() in COLUMN_MAP}
+    df = df.rename(columns=rename)
 
-    missing = [c for c in COLUMN_MAP if c not in df.columns]
+    missing = {"protein_id", "system_type"} - set(df.columns)
     if missing:
-        sys.exit(
-            f"expected columns not found: {missing}\n"
-            f"Actual columns: {list(df.columns)}\n"
-            f"Update COLUMN_MAP in this file to match."
-        )
+        sys.exit(f"could not map: {missing}\nColumns were: {list(df.columns)}")
 
-    df = df.rename(columns=COLUMN_MAP)[list(COLUMN_MAP.values())].dropna()
-    df = df.drop_duplicates(subset="protein_id")
+    keep = [c for c in ["protein_id", "system_type", "system_subtype",
+                        "genome_id", "assembly", "species", "genus", "phylum"]
+            if c in df.columns]
+    df = df[keep].dropna(subset=["protein_id", "system_type"])
+
+    before = len(df)
+    df["protein_id"] = df["protein_id"].astype(str).str.strip()
+    df = df.assign(protein_id=df["protein_id"].str.split(ACCESSION_SPLIT))
+    df = df.explode("protein_id")
+    df["protein_id"] = df["protein_id"].str.strip()
+    df = df[df["protein_id"].str.len() > 3]
+    df = df.drop_duplicates(subset="protein_id").reset_index(drop=True)
+    print(f"{before:,} rows -> {len(df):,} unique proteins")
 
     counts = df["system_type"].value_counts()
-    keep = counts[counts >= MIN_SEQS_PER_TYPE].head(N_SYSTEM_TYPES).index
-    df = df[df["system_type"].isin(keep)].reset_index(drop=True)
+    eligible = counts[counts >= MIN_SEQS_PER_TYPE]
+    if eligible.empty:
+        sys.exit(f"No type has {MIN_SEQS_PER_TYPE}+ proteins. "
+                 f"Largest: {counts.index[0]} ({counts.iloc[0]}).")
 
-    print(f"\nkeeping {len(keep)} system types, {len(df):,} proteins")
+    keep_types = eligible.head(N_SYSTEM_TYPES).index
+    df = df[df["system_type"].isin(keep_types)].reset_index(drop=True)
+
+    if MAX_SEQS_PER_TYPE:
+        parts = [g.sample(min(len(g), MAX_SEQS_PER_TYPE), random_state=0)
+                 for _, g in df.groupby("system_type")]
+        df = pd.concat(parts).reset_index(drop=True)
+        print(f"capped at {MAX_SEQS_PER_TYPE} per type")
+
+    print(f"\n{len(keep_types)} system types, {len(df):,} proteins\n")
     print(df["system_type"].value_counts().to_string())
 
     out = INTERIM / "annotations.parquet"

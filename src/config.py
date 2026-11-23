@@ -37,3 +37,11 @@ SEED = 0
 ESM_MODEL = "esm2_t30_150M_UR50D"
 ESM_LAYER = 30
 EMBED_BATCH_TOKENS = 8192
+
+# Cap sequences per system type. Balances classes and keeps the CPU
+# embedding pass to about an hour. Set to None to use everything.
+MAX_SEQS_PER_TYPE = 2000
+
+# Cap sequences per system type. Balances classes and keeps the CPU
+# embedding pass to about an hour. Set to None to use everything.
+MAX_SEQS_PER_TYPE = 2000
