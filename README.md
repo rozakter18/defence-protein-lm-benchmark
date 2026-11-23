@@ -59,11 +59,15 @@ would look reproducible to three decimal places while being wrong in the first.
 
 ### Where the errors fall
 
-The clustered-split confusion matrix (30% identity, logistic regression, overall
-accuracy 0.948) is not uniform, and the structure is informative.
+The clustered-split confusion matrices are not uniform, and the structure is
+informative. Counts are shown; shading is the row fraction.
 
-Three classes are essentially solved: MazEF (F1 1.000), PD-T7-2 (1.000),
-AbiE (0.998).
+![Confusion matrix at 30% identity clustering](results/confusion_id30.png)
+
+![Confusion matrix at 20% identity clustering](results/confusion_id20.png)
+
+At 30% identity (overall accuracy 0.948), three classes are essentially solved:
+MazEF (F1 1.000), PD-T7-2 (1.000), AbiE (0.998).
 
 Two are notably harder:
 
@@ -80,6 +84,9 @@ a model guessing.
 This matters for interpreting the headline number. If 0.961 came from residual
 leakage or a label artifact, errors would be spread randomly or concentrated in
 one class. Instead they track known protein homology.
+
+Per-class figures for both thresholds are in `results/report_id30.csv` and
+`results/report_id20.csv`.
 
 ## What this does not show
 
@@ -111,7 +118,8 @@ The 12 most abundant system types are kept and **capped at 2,000 proteins each**
 dominated by sampling noise in the small classes. It also keeps the embedding
 pass tractable on CPU.
 
-Final dataset: **23,770 proteins across 12 defence system types.**
+Final dataset: **23,770 proteins across 12 defence system types** — AbiE, BREX,
+CBASS, Cas, Gabija, Lamassu-Fam, MazEF, PD-T7-2, RM, Retron, Septu, Wadjet.
 
 ## Method
 
@@ -162,11 +170,14 @@ python src/make_splits.py         # MMseqs2 clustering, both splits
 python src/embed.py               # ESM-2 pass — ~11 h CPU, minutes on GPU
 python src/train_eval.py          # single-split results
 python src/repeat_eval.py         # 10-seed means and spreads
+python src/confusion.py           # per-class reports, both thresholds
 python src/make_figures.py
 ```
 
 `embed.py` caches every 2,000 sequences and skips what is already done, so it is
-safe to interrupt and resume.
+safe to interrupt and resume. To add a clustering threshold, change
+`CLUSTER_IDENTITY` in `src/config.py` and rerun `make_splits.py`; each threshold
+gets its own directory, and `confusion.py` picks up every one it finds.
 
 ## Limitations
 
@@ -195,5 +206,18 @@ data/       downloaded and derived data (gitignored)
 results/    metrics tables and figures
 ```
 
-`results/repeats_id0.2.csv` holds the per-seed numbers behind every figure in
-this README. `results/id30/` holds the 30%-identity run.
+| File | Contents |
+|---|---|
+| `results/repeats_id0.2.csv` | per-seed macro-F1, the numbers behind the headline table |
+| `results/summary.csv` | single-split results, all features and classifiers |
+| `results/report_id30.csv`, `report_id20.csv` | per-class precision, recall, F1 |
+| `results/confusion_id30.csv`, `confusion_id20.csv` | confusion matrices as counts |
+| `results/id30/` | the earlier 30%-identity single-split run |
+
+## Colour
+
+Figures use a palette adapted from a *Nature* cover. The scheme's blue and pink
+are not used together: their separation under red-green colour blindness is
+ΔE 3.9 against a usable floor of 8, so they are indistinguishable to a
+substantial fraction of readers. The violet and green pair used instead clears
+both the colour-vision-deficiency and normal-vision thresholds.
